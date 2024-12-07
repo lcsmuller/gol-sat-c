@@ -6,54 +6,42 @@
 #include "formula.h"
 #include "pattern.h"
 
-#ifdef DEBUG_MODE
-void
-learnCallback(void *state, int *clause)
-{
-    (void)state;
-    printf("Learned clause: ");
-    while (*clause != 0) { // Clause terminator
-        printf("%d ", *clause);
-        ++clause;
-    }
-    printf("\n");
-}
-#endif // DEBUG_MODE
-
 int
 main(int argc, char **argv)
 {
+    int exit_status = EXIT_FAILURE;
+
+    struct golsat_field_init init = { 0 };
+    struct golsat_field **fields;
+    CMergeSat *s;
+    FILE *f;
+
     struct golsat_options options = { 0 };
+
     if (!golsat_commandline_parse(argc, argv, &options)) {
         return EXIT_FAILURE;
     }
 
     printf("-- Reading pattern from file: %s\n", options.pattern);
-    FILE *f = fopen(options.pattern, "r");
-    if (!f) {
+    if (!(f = fopen(options.pattern, "r"))) {
         printf("-- Error: Cannot open %s\n", options.pattern);
-        return 1;
+        return EXIT_FAILURE;
     }
 
     struct golsat_pattern *pat = golsat_pattern_create(f);
     if (!pat) {
         fprintf(stderr, "-- Error: Pattern creation failed.\n");
-        return EXIT_FAILURE;
+        goto _cleanup_file;
     }
-
-    CMergeSat *s = cmergesat_init();
-#ifdef DEBUG_MODE
-    cmergesat_set_learn(s, NULL, 2, learnCallback);
-#endif // DEBUG_MODE
 
     printf("-- Building formula for %d evolution steps...\n",
            options.evolutions);
-    struct golsat_field **fields = (struct golsat_field **)malloc(
-        sizeof(struct golsat_field *) * (options.evolutions + 1));
+    fields = (struct golsat_field **)malloc(sizeof(struct golsat_field *)
+                                            * (options.evolutions + 1));
+    s = cmergesat_init();
     if (!fields) {
         fprintf(stderr, "-- Error: Memory allocation for fields failed.\n");
-        cmergesat_release(s);
-        return EXIT_FAILURE;
+        goto _cleanup_pat;
     }
 
     for (int g = 0; g <= options.evolutions; ++g) {
@@ -62,22 +50,17 @@ main(int argc, char **argv)
 
         // Adjust field size based on evolution and growth options
         if (options.grow) {
-            int growth = (options.backwards) ? (options.evolutions - g) : g;
+            const int growth =
+                (options.backwards) ? (options.evolutions - g) : g;
             width += 2 * growth;
             height += 2 * growth;
         }
 
         // Create field for the current generation
-        fields[g] = golsat_field_create(s, width, height);
-        if (!fields[g]) {
+        if (!(fields[g] = golsat_field_create(s, width, height, &init))) {
             fprintf(stderr,
                     "-- Error: Field creation failed for generation %d.\n", g);
-            for (int i = 0; i < g; ++i) {
-                golsat_field_cleanup(fields[i]);
-            }
-            free(fields);
-            cmergesat_release(s);
-            return EXIT_FAILURE;
+            goto _cleanup_sat;
         }
 
         // Add transitions between generations
@@ -96,51 +79,53 @@ main(int argc, char **argv)
     }
 
     printf("-- Solving formula...\n");
-    if (!cmergesat_solve(s)) {
+    switch (cmergesat_solve(s)) {
+    case 10:
+        printf("\n");
+        for (int g = 0; g <= options.evolutions; ++g) {
+            if (options.backwards) {
+                if (g == 0)
+                    printf("-- Initial generation:\n");
+                else if (g == options.evolutions)
+                    printf("-- Evolves to final generation (from pattern):\n");
+                else
+                    printf("-- Evolves to:\n");
+            }
+            else {
+                if (g == 0)
+                    printf("-- Initial generation (from pattern):\n");
+                else if (g == options.evolutions)
+                    printf("-- Evolves to final generation:\n");
+                else
+                    printf("-- Evolves to:\n");
+            }
+            golsat_field_print(s, fields[g], stdout);
+            printf("\n");
+        }
+        exit_status = EXIT_SUCCESS;
+        break;
+    case 0:
+        fprintf(stderr, "-- Formula is not solvable.\n");
+        break;
+    case 20:
+    default:
         fprintf(stderr,
                 "-- Formula is not solvable. The selected pattern is probably "
                 "too restrictive!\n");
-        for (int g = 0; g <= options.evolutions; ++g) {
-            golsat_field_cleanup(fields[g]);
-        }
-        free(fields);
-        cmergesat_release(s);
-        return EXIT_FAILURE;
+        break;
     }
+    printf("-- Formula statistics:\n");
+    cmergesat_print_statistics(s);
 
-    printf("\n");
-    for (int g = 0; g <= options.evolutions; ++g) {
-        if (options.backwards) {
-            if (g == 0) {
-                printf("-- Initial generation:\n");
-            }
-            else if (g == options.evolutions) {
-                printf("-- Evolves to final generation (from pattern):\n");
-            }
-            else {
-                printf("-- Evolves to:\n");
-            }
-        }
-        else {
-            if (g == 0) {
-                printf("-- Initial generation (from pattern):\n");
-            }
-            else if (g == options.evolutions) {
-                printf("-- Evolves to final generation:\n");
-            }
-            else {
-                printf("-- Evolves to:\n");
-            }
-        }
-        golsat_field_print(s, fields[g], stdout);
-        printf("\n");
-    }
-
-    for (int g = 0; g <= options.evolutions; ++g) {
+_cleanup_sat:
+    for (int g = 0; g <= options.evolutions; ++g)
         golsat_field_cleanup(fields[g]);
-    }
     free(fields);
     cmergesat_release(s);
+_cleanup_pat:
+    golsat_pattern_cleanup(pat);
+_cleanup_file:
+    fclose(f);
 
-    return EXIT_SUCCESS;
+    return exit_status;
 }

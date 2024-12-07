@@ -4,9 +4,16 @@
 #include "field.h"
 
 struct golsat_field *
-golsat_field_create(CMergeSat *s, int width, int height)
+golsat_field_create(CMergeSat *s,
+                    int width,
+                    int height,
+                    struct golsat_field_init *init)
 {
-    static int var = 1; // makes this function not thread-safe
+    if (!init) return NULL;
+
+    if (init->var == 0) {
+        init->var = 1;
+    }
 
     struct golsat_field *field = (struct golsat_field *)malloc(sizeof *field);
     if (!field) return NULL;
@@ -21,12 +28,12 @@ golsat_field_create(CMergeSat *s, int width, int height)
     }
 
     // Create a false literal
-    field->m_false = var++;
+    field->m_false = init->var++;
     cmergesat_add(s, -field->m_false);
     cmergesat_add(s, 0);
     // Create literals for each cell
     for (int i = 0; i < width * height; ++i) {
-        field->m_literals[i] = var++;
+        field->m_literals[i] = init->var++;
     }
 
     return field;
